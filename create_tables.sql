@@ -1,12 +1,12 @@
--- create_tables.sql
--- Sistema de Gestión de Competiciones Deportivas
--- MySQL 8.0+ | InnoDB | UTF-8MB4
-
--- ====================================================================
--- CONFIGURACIÓN
--- ====================================================================
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
+
+-- ====================================================================
+-- SELECCIÓN DE BASE DE DATOS
+-- ====================================================================
+CREATE DATABASE IF NOT EXISTS competencia_db 
+CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE competencia_db;
 
 -- ====================================================================
 -- TABLAS PRINCIPALES
@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS atleta (
     id_atleta         INT AUTO_INCREMENT PRIMARY KEY,
     nombre            VARCHAR(100) NOT NULL,
     apellido          VARCHAR(100) NOT NULL,
-    fecha_nacimiento  DATE NOT NULL CHECK (fecha_nacimiento <= CURDATE()),
+    -- Se elimina CHECK con CURDATE()
+    fecha_nacimiento  DATE NOT NULL, 
     nacionalidad      VARCHAR(50) NOT NULL CHECK (CHAR_LENGTH(TRIM(nacionalidad)) >= 2),
     fecha_creacion    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -38,7 +39,8 @@ CREATE TABLE IF NOT EXISTS categoria (
 CREATE TABLE IF NOT EXISTS competicion (
     id_competicion    INT AUTO_INCREMENT PRIMARY KEY,
     nombre_evento     VARCHAR(200) NOT NULL CHECK (CHAR_LENGTH(TRIM(nombre_evento)) >= 3),
-    fecha             DATE NOT NULL CHECK (fecha >= CURDATE()),
+    -- Se elimina CHECK con CURDATE()
+    fecha             DATE NOT NULL, 
     lugar             VARCHAR(200) NOT NULL CHECK (CHAR_LENGTH(TRIM(lugar)) >= 2),
     fecha_creacion    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -64,7 +66,6 @@ CREATE TABLE IF NOT EXISTS inscripcion (
     numero_dorsal         INT UNIQUE CHECK (numero_dorsal > 0),
     peso_registro         DECIMAL(5,2) CHECK (peso_registro > 0),
     estatura_registro     DECIMAL(5,2) CHECK (estatura_registro > 0),
-    -- CORRECCIÓN: Campo estándar (no Generated) para ser actualizado por Triggers
     puntuacion_total      INT DEFAULT 0,
     posicion_final        INT CHECK (posicion_final >= 1),
     fecha_creacion        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -90,33 +91,3 @@ CREATE TABLE IF NOT EXISTS puntuacion (
     CONSTRAINT fk_puntuacion_juez FOREIGN KEY (id_juez) REFERENCES juez(id_juez) ON DELETE RESTRICT,
     CONSTRAINT juez_unico_por_inscripcion UNIQUE (id_inscripcion, id_juez)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ====================================================================
--- ÍNDICES (Optimización de Consultas)
--- ====================================================================
-CREATE INDEX idx_atleta_nombre ON atleta(nombre);
-CREATE INDEX idx_atleta_apellido ON atleta(apellido);
-CREATE INDEX idx_categoria_nombre ON categoria(nombre);
-CREATE INDEX idx_competicion_fecha ON competicion(fecha);
-CREATE INDEX idx_competicion_lugar ON competicion(lugar);
-CREATE INDEX idx_inscripcion_competicion ON inscripcion(id_competicion);
-CREATE INDEX idx_inscripcion_categoria ON inscripcion(id_categoria);
-CREATE INDEX idx_inscripcion_posicion ON inscripcion(posicion_final);
-CREATE INDEX idx_juez_nombre ON juez(nombre);
-CREATE INDEX idx_puntuacion_inscripcion ON puntuacion(id_inscripcion);
-
--- ====================================================================
--- COMENTARIOS DE DOCUMENTACIÓN
--- ====================================================================
-ALTER TABLE atleta COMMENT = 'Almacena información personal de los atletas';
-ALTER TABLE categoria COMMENT = 'Define categorías de competición por altura y peso';
-ALTER TABLE competicion COMMENT = 'Registra eventos deportivos';
-ALTER TABLE inscripcion COMMENT = 'Registra la participación de atletas en competiciones';
-ALTER TABLE juez COMMENT = 'Almacena información de los jueces evaluadores';
-ALTER TABLE puntuacion COMMENT = 'Registra rankings otorgados por jueces a inscripciones';
-ALTER TABLE inscripcion MODIFY COLUMN puntuacion_total INT COMMENT 'Campo calculado: suma de rankings (Actualizado por triggers)';
-
--- ====================================================================
--- RESTAURAR CONFIGURACIÓN
--- ====================================================================
-SET FOREIGN_KEY_CHECKS = 1;
