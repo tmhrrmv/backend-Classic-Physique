@@ -1,5 +1,12 @@
-DELIMITER $$ 
+-- ====================================================================
+-- SCRIPT DE TRIGGERS (VALIDACIÓN Y CÁLCULO)
+-- ====================================================================
+-- Importante: Ejecutar ANTES de insertar datos para que los cálculos 
+-- de 'puntuacion_total' funcionen desde el primer momento.
 
+USE competencia_db;
+
+DELIMITER $$ 
 -- =====================================================
 -- 1. TRIGGERS DE VALIDACIÓN (BEFORE)
 --    Se ejecutan antes de guardar. Detienen el proceso si hay error.
@@ -16,6 +23,7 @@ BEGIN
     END IF;
 
     -- Validar que los puntos no sean negativos (Regla de Negocio)
+    -- Nota: La tabla ya tiene CHECK >= 1, pero esto refuerza la lógica en el trigger.
     IF NEW.ranking_otorgado < 0 THEN
         SIGNAL SQLSTATE '45000' 
         SET MESSAGE_TEXT = 'Error: La puntuación no puede ser negativa.';
