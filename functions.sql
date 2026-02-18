@@ -1,42 +1,182 @@
--- ====================================================================
--- SCRIPT DE FUNCIONES (functions.sql)
--- ====================================================================
+-- ============================================================
+-- ARCHIVO 3: functions.sql
+-- Orden de ejecución: 3° (después de triggers.sql)
+-- Base de datos: PostgreSQL
+-- ============================================================
 
-USE competencia_db;
+DROP FUNCTION IF EXISTS inscribir_atleta(TEXT,TEXT,DATE,TEXT,INT,INT,INT,NUMERIC,NUMERIC);
+DROP FUNCTION IF EXISTS actualizar_datos_inscripcion(INT,INT,INT,NUMERIC,NUMERIC);
+DROP FUNCTION IF EXISTS historial_atleta(INT);
+DROP FUNCTION IF EXISTS atletas_sin_inscripcion_en_evento(INT);
 
-DELIMITER $$ 
--- =====================================================
--- 1. FUNCIÓN: Calcular Edad Exacta
---    CORRECCIÓN: TIMESTAMPDIFF ya calcula años completos.
---    La lógica manual anterior causaba que se restara un año
---    de más cuando aún no había pasado el cumpleaños.
--- =====================================================
-CREATE FUNCTION fn_calcular_edad(fecha_nac DATE) RETURNS INT
-DETERMINISTIC
-NO SQL
+-- -------------------------------------------------------
+-- FUNCTION: inscribir_atleta
+--
+-- Registra a un atleta en un evento con sus datos físicos
+-- actuales (peso, estatura, categoría).
+--
+--   - Si el atleta no existe -> lo crea.
+--   - Si ya está inscrito en ESE evento -> lanza excepción.
+--   - Si ya estuvo en OTROS eventos -> crea nueva inscripción
+--     con los datos físicos nuevos (pueden ser distintos).
+--
+-- El trigger trg_validar_inscripcion_insert comprueba
+-- automáticamente que los datos son válidos para la categoría.
+-- -------------------------------------------------------
+CREATE OR REPLACE FUNCTION inscribir_atleta(
+  p_nombre             TEXT,
+  p_apellido           TEXT,
+  p_fecha_nacimiento   DATE,
+  p_nacionalidad       TEXT,
+  p_id_competicion     INT,
+  p_id_categoria       INT     DEFAULT NULL,
+  p_numero_dorsal      INT     DEFAULT NULL,
+  p_peso_registro      NUMERIC DEFAULT NULL,
+  p_estatura_registro  NUMERIC DEFAULT NULL
+) RETURNS TABLE (
+  out_id_atleta      INT,
+  out_id_inscripcion INT,
+  mensaje            TEXT
+) LANGUAGE plpgsql AS $$
+DECLARE
+  v_id_atleta      INT;
+  v_id_inscripcion INT;
 BEGIN
-    -- TIMESTAMPDIFF(YEAR, ...) calcula automáticamente cuántos años
-    -- completos han pasado entre dos fechas, manejando bisiestos y días.
-    RETURN TIMESTAMPDIFF(YEAR, fecha_nac, CURDATE());
-END$$ 
--- =====================================================
--- 2. FUNCIÓN: Determinar categoría ideal basada en altura
---    Nota: Usa los rangos definidos en la tabla 'categoria'.
--- =====================================================
-CREATE FUNCTION fn_determinar_categoria_altura(p_altura DECIMAL(5,2)) RETURNS VARCHAR(50)
-DETERMINISTIC
-READS SQL DATA
+  IF p_id_competicion IS NULL THEN
+    RAISE EXCEPTION 'Debes indicar el evento (p_id_competicion) al inscribir un atleta';
+  END IF;
+
+  -- Crear atleta si no existe; reutilizar si ya existe
+  INSERT INTO atleta (nombre, apellido, fecha_nacimiento, nacionalidad)
+  VALUES (p_nombre, p_apellido, p_fecha_nacimiento, p_nacionalidad)
+  ON CONFLICT (nombre, apellido, fecha_nacimiento) DO NOTHING;
+
+  SELECT id_atleta INTO v_id_atleta
+    FROM atleta
+   WHERE nombre           = p_nombre
+     AND apellido         = p_apellido
+     AND fecha_nacimiento = p_fecha_nacimiento;
+
+  -- Verificar que no esté ya inscrito en ESTE evento
+  IF EXISTS (
+    SELECT 1 FROM inscripcion
+     WHERE id_atleta = v_id_atleta AND id_competicion = p_id_competicion
+  ) THEN
+    RAISE EXCEPTION 'El atleta ya está inscrito en este evento. Usa actualizar_datos_inscripcion() para corregir sus datos.';
+  END IF;
+
+  -- Crear inscripción para este evento con los datos físicos actuales
+  -- (el trigger validará peso/estatura vs categoría automáticamente)
+  INSERT INTO inscripcion
+    (id_atleta, id_competicion, id_categoria, numero_dorsal, peso_registro, estatura_registro)
+  VALUES
+    (v_id_atleta, p_id_competicion, p_id_categoria, p_numero_dorsal, p_peso_registro, p_estatura_registro)
+  RETURNING id_inscripcion INTO v_id_inscripcion;
+
+  out_id_atleta      := v_id_atleta;
+  out_id_inscripcion := v_id_inscripcion;
+  mensaje            := 'Inscripción creada correctamente';
+  RETURN NEXT;
+END;
+$$;
+
+
+-- -------------------------------------------------------
+-- FUNCTION: actualizar_datos_inscripcion
+--
+-- Corrige los datos físicos de una inscripción ya existente
+-- (por ejemplo, un error de registro en peso o estatura).
+-- No crea una nueva inscripción.
+-- -------------------------------------------------------
+CREATE OR REPLACE FUNCTION actualizar_datos_inscripcion(
+  p_id_inscripcion    INT,
+  p_id_categoria      INT     DEFAULT NULL,
+  p_numero_dorsal     INT     DEFAULT NULL,
+  p_peso_registro     NUMERIC DEFAULT NULL,
+  p_estatura_registro NUMERIC DEFAULT NULL
+) RETURNS TEXT LANGUAGE plpgsql AS $$
 BEGIN
-    DECLARE nom_categoria VARCHAR(50);
-    
-    -- Buscamos la categoría donde la altura ingresada (parámetro)
-    -- esté entre la altura mínima y máxima de la tabla.
-    -- Se usa 'p_altura' para evitar ambigüedades con nombres de columnas.
-    SELECT nombre INTO nom_categoria 
-    FROM categoria 
-    WHERE p_altura >= altura_min AND p_altura <= altura_max
-    LIMIT 1;
-    
-    RETURN IFNULL(nom_categoria, 'Sin Categoría');
-END$$ 
-DELIMITER ;
+  IF NOT EXISTS (SELECT 1 FROM inscripcion WHERE id_inscripcion = p_id_inscripcion) THEN
+    RAISE EXCEPTION 'No existe una inscripción con id %', p_id_inscripcion;
+  END IF;
+
+  -- El trigger trg_validar_inscripcion_update validará los nuevos datos
+  UPDATE inscripcion SET
+    id_categoria      = COALESCE(p_id_categoria,      id_categoria),
+    numero_dorsal     = COALESCE(p_numero_dorsal,     numero_dorsal),
+    peso_registro     = COALESCE(p_peso_registro,     peso_registro),
+    estatura_registro = COALESCE(p_estatura_registro, estatura_registro)
+  WHERE id_inscripcion = p_id_inscripcion;
+
+  RETURN 'Inscripción actualizada correctamente';
+END;
+$$;
+
+
+-- -------------------------------------------------------
+-- FUNCTION: historial_atleta
+--
+-- Devuelve el historial completo de un atleta en todos los
+-- eventos en que ha participado, con los datos físicos que
+-- tenía en cada momento.
+-- -------------------------------------------------------
+CREATE OR REPLACE FUNCTION historial_atleta(p_id_atleta INT)
+RETURNS TABLE (
+  nombre_atleta       TEXT,
+  apellido_atleta     TEXT,
+  nombre_evento       TEXT,
+  fecha_evento        DATE,
+  categoria           TEXT,
+  numero_dorsal       INT,
+  peso_en_ese_evento  NUMERIC,
+  estatura_en_evento  NUMERIC,
+  fecha_inscripcion   TIMESTAMPTZ
+) LANGUAGE sql AS $$
+  SELECT
+    a.nombre,
+    a.apellido,
+    c.nombre_evento,
+    c.fecha,
+    cat.nombre,
+    i.numero_dorsal,
+    i.peso_registro,
+    i.estatura_registro,
+    i.fecha_inscripcion
+  FROM inscripcion i
+  JOIN atleta      a   ON a.id_atleta      = i.id_atleta
+  JOIN competicion c   ON c.id_competicion = i.id_competicion
+  LEFT JOIN categoria cat ON cat.id_categoria = i.id_categoria
+  WHERE i.id_atleta = p_id_atleta
+  ORDER BY c.fecha;
+$$;
+
+
+-- -------------------------------------------------------
+-- FUNCTION: atletas_sin_inscripcion_en_evento
+--
+-- Lista atletas que NO están inscritos en un evento concreto.
+-- Útil para identificar quién falta por inscribir antes de
+-- que comience la competición.
+-- -------------------------------------------------------
+CREATE OR REPLACE FUNCTION atletas_sin_inscripcion_en_evento(p_id_competicion INT)
+RETURNS TABLE (
+  id_atleta        INT,
+  nombre           TEXT,
+  apellido         TEXT,
+  fecha_nacimiento DATE,
+  nacionalidad     TEXT
+) LANGUAGE sql AS $$
+  SELECT
+    a.id_atleta,
+    a.nombre,
+    a.apellido,
+    a.fecha_nacimiento,
+    a.nacionalidad
+  FROM atleta a
+  WHERE NOT EXISTS (
+    SELECT 1 FROM inscripcion i
+     WHERE i.id_atleta      = a.id_atleta
+       AND i.id_competicion = p_id_competicion
+  )
+  ORDER BY a.apellido, a.nombre;
+$$;

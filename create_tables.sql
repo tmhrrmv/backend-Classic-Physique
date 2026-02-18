@@ -1,93 +1,87 @@
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
+-- ============================================================
+-- ARCHIVO 1: create_tables.sql
+-- Orden de ejecución: 1°
+-- Base de datos: PostgreSQL
+--
+-- DISEÑO CLAVE:
+--   - atleta guarda solo datos de IDENTIDAD (nombre, fecha nac.,
+--     nacionalidad). Nunca cambian entre eventos.
+--   - inscripcion guarda los datos FÍSICOS por cada evento:
+--     peso, estatura y categoría pueden ser distintos en cada
+--     competición porque el atleta evoluciona con el tiempo.
+--   - Un atleta puede participar en N eventos con datos distintos.
+--   - Un atleta NO puede inscribirse 2 veces en el mismo evento.
+-- ============================================================
 
--- ====================================================================
--- SELECCIÓN DE BASE DE DATOS
--- ====================================================================
-CREATE DATABASE IF NOT EXISTS competencia_db 
-CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE competencia_db;
+DROP TABLE IF EXISTS puntuacion   CASCADE;
+DROP TABLE IF EXISTS inscripcion  CASCADE;
+DROP TABLE IF EXISTS juez         CASCADE;
+DROP TABLE IF EXISTS atleta       CASCADE;
+DROP TABLE IF EXISTS competicion  CASCADE;
+DROP TABLE IF EXISTS categoria    CASCADE;
 
--- ====================================================================
--- TABLAS PRINCIPALES
--- ====================================================================
+-- categoria: rangos válidos por categoría de competición
+CREATE TABLE categoria (
+  id_categoria          SERIAL PRIMARY KEY,
+  nombre                TEXT    UNIQUE NOT NULL,
+  altura_min            NUMERIC,
+  altura_max            NUMERIC,
+  peso_maximo_permitido NUMERIC
+);
 
--- ATLETA
-CREATE TABLE IF NOT EXISTS atleta (
-    id_atleta         INT AUTO_INCREMENT PRIMARY KEY,
-    nombre            VARCHAR(100) NOT NULL,
-    apellido          VARCHAR(100) NOT NULL,
-    -- Se elimina CHECK con CURDATE()
-    fecha_nacimiento  DATE NOT NULL, 
-    nacionalidad      VARCHAR(50) NOT NULL CHECK (CHAR_LENGTH(TRIM(nacionalidad)) >= 2),
-    fecha_creacion    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- competicion: cada evento es un registro independiente
+CREATE TABLE competicion (
+  id_competicion SERIAL PRIMARY KEY,
+  nombre_evento  TEXT NOT NULL,
+  fecha          DATE,
+  lugar          TEXT,
+  UNIQUE (nombre_evento, fecha)
+);
 
--- CATEGORIA
-CREATE TABLE IF NOT EXISTS categoria (
-    id_categoria               INT AUTO_INCREMENT PRIMARY KEY,
-    nombre                     VARCHAR(50) NOT NULL UNIQUE CHECK (CHAR_LENGTH(TRIM(nombre)) >= 2),
-    altura_min                 DECIMAL(5,2) NOT NULL CHECK (altura_min > 0),
-    altura_max                 DECIMAL(5,2) NOT NULL CHECK (altura_max > altura_min),
-    peso_maximo_permitido      DECIMAL(5,2) NOT NULL CHECK (peso_maximo_permitido > 0),
-    fecha_creacion             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_actualizacion       TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- atleta: datos de identidad fijos (no cambian entre eventos)
+CREATE TABLE atleta (
+  id_atleta        SERIAL PRIMARY KEY,
+  nombre           TEXT NOT NULL,
+  apellido         TEXT NOT NULL,
+  fecha_nacimiento DATE NOT NULL,
+  nacionalidad     TEXT,
+  CONSTRAINT atleta_unique UNIQUE (nombre, apellido, fecha_nacimiento)
+);
 
--- COMPETICION
-CREATE TABLE IF NOT EXISTS competicion (
-    id_competicion    INT AUTO_INCREMENT PRIMARY KEY,
-    nombre_evento     VARCHAR(200) NOT NULL CHECK (CHAR_LENGTH(TRIM(nombre_evento)) >= 3),
-    -- Se elimina CHECK con CURDATE()
-    fecha             DATE NOT NULL, 
-    lugar             VARCHAR(200) NOT NULL CHECK (CHAR_LENGTH(TRIM(lugar)) >= 2),
-    fecha_creacion    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- juez
+CREATE TABLE juez (
+  id_juez  SERIAL PRIMARY KEY,
+  nombre   TEXT NOT NULL,
+  licencia TEXT UNIQUE NOT NULL
+);
 
--- JUEZ
-CREATE TABLE IF NOT EXISTS juez (
-    id_juez           INT AUTO_INCREMENT PRIMARY KEY,
-    nombre            VARCHAR(100) NOT NULL,
-    licencia          VARCHAR(50) NOT NULL UNIQUE CHECK (CHAR_LENGTH(TRIM(licencia)) >= 3),
-    fecha_creacion    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- inscripcion: una fila por (atleta x evento)
+--   peso_registro, estatura_registro e id_categoria se registran
+--   en el momento de cada evento: pueden cambiar entre competiciones.
+--   UNIQUE (id_atleta, id_competicion) evita duplicados en el mismo
+--   evento pero permite al mismo atleta aparecer en N eventos distintos.
+CREATE TABLE inscripcion (
+  id_inscripcion    SERIAL PRIMARY KEY,
+  id_atleta         INT  NOT NULL REFERENCES atleta(id_atleta)           ON DELETE CASCADE,
+  id_competicion    INT  NOT NULL REFERENCES competicion(id_competicion)  ON DELETE CASCADE,
+  id_categoria      INT           REFERENCES categoria(id_categoria)      ON DELETE SET NULL,
+  numero_dorsal     INT,
+  peso_registro     NUMERIC,
+  estatura_registro NUMERIC,
+  fecha_inscripcion TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (id_atleta, id_competicion)
+);
 
--- ====================================================================
--- TABLA INTERMEDIA: INSCRIPCION
--- ====================================================================
-CREATE TABLE IF NOT EXISTS inscripcion (
-    id_inscripcion        INT AUTO_INCREMENT PRIMARY KEY,
-    id_atleta             INT NOT NULL,
-    id_competicion        INT NOT NULL,
-    id_categoria          INT NOT NULL,
-    numero_dorsal         INT UNIQUE CHECK (numero_dorsal > 0),
-    peso_registro         DECIMAL(5,2) CHECK (peso_registro > 0),
-    estatura_registro     DECIMAL(5,2) CHECK (estatura_registro > 0),
-    puntuacion_total      INT DEFAULT 0,
-    posicion_final        INT CHECK (posicion_final >= 1),
-    fecha_creacion        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_actualizacion   TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
-    CONSTRAINT fk_inscripcion_atleta FOREIGN KEY (id_atleta) REFERENCES atleta(id_atleta) ON DELETE CASCADE,
-    CONSTRAINT fk_inscripcion_competicion FOREIGN KEY (id_competicion) REFERENCES competicion(id_competicion) ON DELETE CASCADE,
-    CONSTRAINT fk_inscripcion_categoria FOREIGN KEY (id_categoria) REFERENCES categoria(id_categoria),
-    CONSTRAINT inscripcion_unica UNIQUE (id_atleta, id_competicion)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- puntuacion: nota de un juez sobre una inscripción concreta
+CREATE TABLE puntuacion (
+  id_puntuacion    SERIAL PRIMARY KEY,
+  id_inscripcion   INT NOT NULL REFERENCES inscripcion(id_inscripcion) ON DELETE CASCADE,
+  id_juez          INT NOT NULL REFERENCES juez(id_juez)               ON DELETE CASCADE,
+  ranking_otorgado INT,
+  UNIQUE (id_inscripcion, id_juez)
+);
 
--- ====================================================================
--- TABLA DE PUNTUACIONES
--- ====================================================================
-CREATE TABLE IF NOT EXISTS puntuacion (
-    id_puntuacion    INT AUTO_INCREMENT PRIMARY KEY,
-    id_inscripcion   INT NOT NULL,
-    id_juez          INT NOT NULL,
-    ranking_otorgado INT NOT NULL CHECK (ranking_otorgado >= 1),
-    fecha_creacion   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT fk_puntuacion_inscripcion FOREIGN KEY (id_inscripcion) REFERENCES inscripcion(id_inscripcion) ON DELETE CASCADE,
-    CONSTRAINT fk_puntuacion_juez FOREIGN KEY (id_juez) REFERENCES juez(id_juez) ON DELETE RESTRICT,
-    CONSTRAINT juez_unico_por_inscripcion UNIQUE (id_inscripcion, id_juez)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Índices para consultas frecuentes
+CREATE INDEX idx_inscripcion_atleta      ON inscripcion(id_atleta);
+CREATE INDEX idx_inscripcion_competicion ON inscripcion(id_competicion);
+CREATE INDEX idx_puntuacion_inscripcion  ON puntuacion(id_inscripcion);

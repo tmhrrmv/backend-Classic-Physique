@@ -1,59 +1,145 @@
--- ====================================================================
--- SCRIPT DE DATOS (INSERTS)
--- ====================================================================
+-- ============================================================
+-- ARCHIVO 4: insert_data.sql
+-- Orden de ejecución: 4° (después de functions.sql)
+-- Base de datos: PostgreSQL
+--
+-- FLUJO CORRECTO:
+--   1. Cada evento se registra en `competicion`.
+--   2. Al llegar cada competición, los atletas se inscriben
+--      con SELECT * FROM inscribir_atleta(...) aportando sus
+--      datos físicos ACTUALES en ese momento.
+--   3. Un mismo atleta puede aparecer en varios eventos con
+--      peso, estatura y categoría distintos.
+-- ============================================================
 
--- Seleccionamos la base de datos (Debe coincidir con la creada en el script anterior)
-USE competencia_db;
+BEGIN;
 
--- 1. Categorías
--- Insertamos las categorías primero ya que no dependen de otras tablas.
-INSERT INTO categoria (nombre, altura_min, altura_max, peso_maximo_permitido) VALUES
-('Cadete', 1.40, 1.59, 60.00),
-('Juvenil', 1.60, 1.75, 75.00),
-('Senior', 1.76, 2.20, 120.00);
+-- -------------------------------------------------------
+-- Categorías
+-- -------------------------------------------------------
+INSERT INTO categoria (nombre, altura_min, altura_max, peso_maximo_permitido)
+SELECT nombre, altura_min, altura_max, peso_maximo_permitido FROM (VALUES
+  ('Cadete',  1.40::NUMERIC, 1.59::NUMERIC,  60.00::NUMERIC),
+  ('Juvenil', 1.60::NUMERIC, 1.75::NUMERIC,  75.00::NUMERIC),
+  ('Senior',  1.76::NUMERIC, 2.20::NUMERIC, 120.00::NUMERIC)
+) AS v(nombre, altura_min, altura_max, peso_maximo_permitido)
+WHERE NOT EXISTS (SELECT 1 FROM categoria c WHERE c.nombre = v.nombre);
 
--- 2. Competiciones
--- Usamos DATE_ADD para asegurar fechas futuras (requerido por el Trigger).
-INSERT INTO competicion (nombre_evento, fecha, lugar) VALUES
-('Torneo Apertura Regional', DATE_ADD(CURDATE(), INTERVAL 15 DAY), 'Estadio Nacional'),
-('Copa Ciudad de Madrid', DATE_ADD(CURDATE(), INTERVAL 30 DAY), 'Centro Deportivo Municipal');
+-- -------------------------------------------------------
+-- Competiciones (eventos reales, uno por fecha)
+-- -------------------------------------------------------
+INSERT INTO competicion (nombre_evento, fecha, lugar)
+SELECT nombre_evento, fecha::DATE, lugar FROM (VALUES
+  ('Torneo Apertura 2024',       '2024-03-10', 'Estadio Nacional'),
+  ('Copa Ciudad de Madrid 2024', '2024-09-21', 'Centro Deportivo Municipal'),
+  ('Torneo Apertura 2025',       '2025-03-09', 'Estadio Nacional'),
+  ('Copa Ciudad de Madrid 2025', '2025-09-20', 'Centro Deportivo Municipal')
+) AS v(nombre_evento, fecha, lugar)
+WHERE NOT EXISTS (
+  SELECT 1 FROM competicion c
+   WHERE c.nombre_evento = v.nombre_evento AND c.fecha = v.fecha::DATE
+);
 
--- 3. Atletas
--- Las fechas de nacimiento son pasadas (validado por el Trigger).
-INSERT INTO atleta (nombre, apellido, fecha_nacimiento, nacionalidad) VALUES
-('Carlos', 'Gomez', '2005-04-12', 'ESP'),
-('Maria', 'Rodriguez', '2004-08-22', 'MEX'),
-('Lucas', 'Fernandez', '2002-01-15', 'ARG'),
-('Sofia', 'Lopez', '2003-11-30', 'CHL');
+-- -------------------------------------------------------
+-- Jueces
+-- -------------------------------------------------------
+INSERT INTO juez (nombre, licencia)
+SELECT nombre, licencia FROM (VALUES
+  ('Roberto Diaz', 'JUE-001'),
+  ('Ana Martinez', 'JUE-002')
+) AS v(nombre, licencia)
+WHERE NOT EXISTS (SELECT 1 FROM juez j WHERE j.licencia = v.licencia);
 
--- 4. Jueces
-INSERT INTO juez (nombre, licencia) VALUES
-('Roberto Diaz', 'JUE-001'),
-('Ana Martinez', 'JUE-002');
+-- -------------------------------------------------------
+-- Inscripciones por evento
+--
+-- Carlos Gomez:     2024 -> Cadete (55 kg, 1.55 m)
+--                   2025 -> Juvenil (63 kg, 1.62 m) [creció y cambió de categoría]
+-- Maria Rodriguez:  mantiene Juvenil pero varía el peso
+-- Lucas Fernandez:  Senior en todos los eventos
+-- Sofia Lopez:      se incorpora en 2025
+-- -------------------------------------------------------
 
--- 5. Inscripciones
--- Nota: Los IDs (1, 1, 1) dependen del orden de inserción anterior.
--- Si tienes errores de FK aquí, asegúrate de haber ejecutado los INSERTs anteriores primero.
+-- === TORNEO APERTURA 2024 ===
+SELECT * FROM inscribir_atleta('Carlos', 'Gomez',     '2005-04-12', 'ESP',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2024'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Cadete'),
+  101, 55.50, 1.55);
 
--- Carlos (ID 1) inscrito en Torneo Apertura (ID 1) - Categoría Cadete (ID 1)
-INSERT INTO inscripcion (id_atleta, id_competicion, id_categoria, numero_dorsal, peso_registro, estatura_registro) 
-VALUES (1, 1, 1, 101, 55.50, 1.55);
+SELECT * FROM inscribir_atleta('Maria', 'Rodriguez',  '2004-08-22', 'MEX',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2024'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Juvenil'),
+  102, 62.00, 1.68);
 
--- Maria (ID 2) inscrita en Torneo Apertura (ID 1) - Categoría Juvenil (ID 2)
-INSERT INTO inscripcion (id_atleta, id_competicion, id_categoria, numero_dorsal, peso_registro, estatura_registro) 
-VALUES (2, 1, 2, 102, 62.00, 1.68);
+SELECT * FROM inscribir_atleta('Lucas', 'Fernandez',  '2002-01-15', 'ARG',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2024'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Senior'),
+  103, 85.00, 1.80);
 
--- Lucas (ID 3) inscrito en Torneo Apertura (ID 1) - Categoría Senior (ID 3)
-INSERT INTO inscripcion (id_atleta, id_competicion, id_categoria, numero_dorsal, peso_registro, estatura_registro) 
-VALUES (3, 1, 3, 103, 85.00, 1.80);
+-- === COPA CIUDAD DE MADRID 2024 ===
+SELECT * FROM inscribir_atleta('Carlos', 'Gomez',     '2005-04-12', 'ESP',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Copa Ciudad de Madrid 2024'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Cadete'),
+  201, 56.00, 1.55);   -- ligero aumento de peso entre eventos
 
--- 6. Puntuaciones (Rankings otorgados por jueces)
--- Para Carlos (Inscripción ID 1)
-INSERT INTO puntuacion (id_inscripcion, id_juez, ranking_otorgado) VALUES (1, 1, 8);
-INSERT INTO puntuacion (id_inscripcion, id_juez, ranking_otorgado) VALUES (1, 2, 9);
+SELECT * FROM inscribir_atleta('Lucas', 'Fernandez',  '2002-01-15', 'ARG',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Copa Ciudad de Madrid 2024'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Senior'),
+  202, 86.50, 1.80);
 
--- Para Maria (Inscripción ID 2)
-INSERT INTO puntuacion (id_inscripcion, id_juez, ranking_otorgado) VALUES (2, 1, 7);
-INSERT INTO puntuacion (id_inscripcion, id_juez, ranking_otorgado) VALUES (2, 2, 8);
+-- === TORNEO APERTURA 2025 ===
+-- Carlos sube de categoría: ya no es Cadete, ahora es Juvenil
+SELECT * FROM inscribir_atleta('Carlos', 'Gomez',     '2005-04-12', 'ESP',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2025'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Juvenil'),
+  101, 63.00, 1.62);   -- creció y ganó masa muscular
 
--- Para Lucas (Inscripción ID 3) - Sin puntuaciones aún para probar updates posteriores
+SELECT * FROM inscribir_atleta('Maria', 'Rodriguez',  '2004-08-22', 'MEX',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2025'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Juvenil'),
+  102, 60.50, 1.68);   -- bajó de peso respecto a 2024
+
+SELECT * FROM inscribir_atleta('Lucas', 'Fernandez',  '2002-01-15', 'ARG',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2025'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Senior'),
+  103, 87.00, 1.80);
+
+-- Sofia se incorpora en 2025
+SELECT * FROM inscribir_atleta('Sofia', 'Lopez',       '2003-11-30', 'CHL',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Torneo Apertura 2025'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Juvenil'),
+  104, 58.00, 1.65);
+
+-- === COPA CIUDAD DE MADRID 2025 ===
+SELECT * FROM inscribir_atleta('Carlos', 'Gomez',     '2005-04-12', 'ESP',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Copa Ciudad de Madrid 2025'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Juvenil'),
+  201, 63.50, 1.62);
+
+SELECT * FROM inscribir_atleta('Sofia', 'Lopez',       '2003-11-30', 'CHL',
+  (SELECT id_competicion FROM competicion WHERE nombre_evento = 'Copa Ciudad de Madrid 2025'),
+  (SELECT id_categoria   FROM categoria   WHERE nombre = 'Juvenil'),
+  202, 58.50, 1.65);
+
+COMMIT;
+
+-- -------------------------------------------------------
+-- Consultas de verificación (descomentar para probar)
+-- -------------------------------------------------------
+
+-- Historial completo de Carlos Gomez (verás sus datos físicos por evento):
+-- SELECT * FROM historial_atleta(
+--   (SELECT id_atleta FROM atleta WHERE nombre='Carlos' AND apellido='Gomez'));
+
+-- Quién no está inscrito en el Torneo 2025:
+-- SELECT * FROM atletas_sin_inscripcion_en_evento(
+--   (SELECT id_competicion FROM competicion WHERE nombre_evento='Torneo Apertura 2025'));
+
+-- Vista general de todas las inscripciones con datos físicos:
+-- SELECT a.nombre, a.apellido, c.nombre_evento, c.fecha,
+--        cat.nombre AS categoria, i.peso_registro, i.estatura_registro
+--   FROM inscripcion i
+--   JOIN atleta      a   ON a.id_atleta      = i.id_atleta
+--   JOIN competicion c   ON c.id_competicion = i.id_competicion
+--   LEFT JOIN categoria cat ON cat.id_categoria = i.id_categoria
+--   ORDER BY a.apellido, c.fecha;

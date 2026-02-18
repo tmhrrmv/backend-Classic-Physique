@@ -1,97 +1,63 @@
--- ====================================================================
--- SCRIPT DE TRIGGERS (VALIDACIÓN Y CÁLCULO)
--- ====================================================================
--- Importante: Ejecutar ANTES de insertar datos para que los cálculos 
--- de 'puntuacion_total' funcionen desde el primer momento.
+-- ============================================================
+-- ARCHIVO 2: triggers.sql
+-- Orden de ejecución: 2° (después de create_tables.sql)
+-- Base de datos: PostgreSQL
+--
+-- Se eliminó el trigger de "inscripción por defecto" porque
+-- los atletas solo se inscriben en eventos reales con sus datos
+-- físicos actuales. En su lugar se incluye validación automática
+-- de que peso y estatura sean coherentes con la categoría.
+-- ============================================================
 
-USE competencia_db;
+DROP TRIGGER  IF EXISTS trg_validar_inscripcion_insert ON inscripcion;
+DROP TRIGGER  IF EXISTS trg_validar_inscripcion_update ON inscripcion;
+DROP FUNCTION IF EXISTS fn_validar_datos_inscripcion();
 
-DELIMITER $$ 
--- =====================================================
--- 1. TRIGGERS DE VALIDACIÓN (BEFORE)
---    Se ejecutan antes de guardar. Detienen el proceso si hay error.
--- =====================================================
-
-CREATE TRIGGER trg_puntuacion_validate_insert
-BEFORE INSERT ON puntuacion
-FOR EACH ROW
+-- Función compartida por ambos triggers
+CREATE OR REPLACE FUNCTION fn_validar_datos_inscripcion()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE
+  v_peso_max   NUMERIC;
+  v_alt_min    NUMERIC;
+  v_alt_max    NUMERIC;
 BEGIN
-    -- Validar que los puntos no sean nulos
-    IF NEW.ranking_otorgado IS NULL THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Error: La puntuación no puede ser nula.';
-    END IF;
+  IF NEW.id_categoria IS NULL THEN
+    RETURN NEW;
+  END IF;
 
-    -- Validar que los puntos no sean negativos (Regla de Negocio)
-    -- Nota: La tabla ya tiene CHECK >= 1, pero esto refuerza la lógica en el trigger.
-    IF NEW.ranking_otorgado < 0 THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Error: La puntuación no puede ser negativa.';
-    END IF;
-    
-    -- Validar límite máximo (ej. 100 puntos)
-    IF NEW.ranking_otorgado > 100 THEN
-        SIGNAL SQLSTATE '45000' 
-        SET MESSAGE_TEXT = 'Error: La puntuación máxima permitida es 100.';
-    END IF;
-END$$ 
+  SELECT peso_maximo_permitido, altura_min, altura_max
+    INTO v_peso_max, v_alt_min, v_alt_max
+    FROM categoria
+   WHERE id_categoria = NEW.id_categoria;
 
-CREATE TRIGGER trg_puntuacion_validate_update
-BEFORE UPDATE ON puntuacion
-FOR EACH ROW
-BEGIN
-    -- Solo validar si el campo de puntos cambió
-    IF NEW.ranking_otorgado <> OLD.ranking_otorgado THEN
-        IF NEW.ranking_otorgado < 0 THEN
-            SIGNAL SQLSTATE '45000' 
-            SET MESSAGE_TEXT = 'Error: La puntuación no puede ser negativa.';
-        END IF;
-        
-        IF NEW.ranking_otorgado > 100 THEN
-            SIGNAL SQLSTATE '45000' 
-            SET MESSAGE_TEXT = 'Error: La puntuación máxima permitida es 100.';
-        END IF;
-    END IF;
-END$$ 
+  IF NEW.peso_registro IS NOT NULL AND v_peso_max IS NOT NULL
+     AND NEW.peso_registro > v_peso_max THEN
+    RAISE EXCEPTION 'El peso del atleta (%) supera el máximo permitido (%) para la categoría',
+      NEW.peso_registro, v_peso_max;
+  END IF;
 
+  IF NEW.estatura_registro IS NOT NULL AND v_alt_min IS NOT NULL
+     AND NEW.estatura_registro < v_alt_min THEN
+    RAISE EXCEPTION 'La estatura del atleta (%) es inferior al mínimo (%) de la categoría',
+      NEW.estatura_registro, v_alt_min;
+  END IF;
 
--- =====================================================
--- 2. TRIGGERS DE CÁLCULO Y ACTUALIZACIÓN (AFTER)
---    Se ejecutan después de guardar. Actualizan el total.
---    Si fallan aquí, MySQL hace ROLLBACK automático del INSERT.
--- =====================================================
+  IF NEW.estatura_registro IS NOT NULL AND v_alt_max IS NOT NULL
+     AND NEW.estatura_registro > v_alt_max THEN
+    RAISE EXCEPTION 'La estatura del atleta (%) supera el máximo (%) de la categoría',
+      NEW.estatura_registro, v_alt_max;
+  END IF;
 
-CREATE TRIGGER trg_puntuacion_calc_insert
-AFTER INSERT ON puntuacion
-FOR EACH ROW
-BEGIN
-    -- Usamos cálculo diferencial (Sumar)
-    UPDATE inscripcion 
-    SET puntuacion_total = puntuacion_total + NEW.ranking_otorgado
-    WHERE id_inscripcion = NEW.id_inscripcion;
-END$$ 
+  RETURN NEW;
+END;
+$$;
 
-CREATE TRIGGER trg_puntuacion_calc_update
-AFTER UPDATE ON puntuacion
-FOR EACH ROW
-BEGIN
-    -- Solo actualizar si el valor cambió
-    IF NEW.ranking_otorgado <> OLD.ranking_otorgado THEN
-        -- Resta lo que valía y suma lo nuevo
-        UPDATE inscripcion 
-        SET puntuacion_total = puntuacion_total - OLD.ranking_otorgado + NEW.ranking_otorgado
-        WHERE id_inscripcion = NEW.id_inscripcion;
-    END IF;
-END$$ 
+-- Trigger en INSERT
+CREATE TRIGGER trg_validar_inscripcion_insert
+BEFORE INSERT ON inscripcion
+FOR EACH ROW EXECUTE FUNCTION fn_validar_datos_inscripcion();
 
-CREATE TRIGGER trg_puntuacion_calc_delete
-AFTER DELETE ON puntuacion
-FOR EACH ROW
-BEGIN
-    -- Resta los puntos que se borran
-    UPDATE inscripcion 
-    SET puntuacion_total = puntuacion_total - OLD.ranking_otorgado
-    WHERE id_inscripcion = OLD.id_inscripcion;
-END$$ 
-
-DELIMITER ;
+-- Trigger en UPDATE (por si se corrige categoría o datos físicos)
+CREATE TRIGGER trg_validar_inscripcion_update
+BEFORE UPDATE ON inscripcion
+FOR EACH ROW EXECUTE FUNCTION fn_validar_datos_inscripcion();
